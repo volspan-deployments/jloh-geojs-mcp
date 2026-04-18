@@ -15,7 +15,7 @@ BASE_URL = "https://get.geojs.io"
 
 @mcp.tool()
 async def get_my_ip() -> dict:
-    """Get the public IP address of the current request/caller. Use this when the user wants to know their own IP address or when you need to determine the caller's IP before doing a geo lookup."""
+    """Retrieve the public IP address of the current client/requester. Use this when the user wants to know their own IP address or when you need to determine the caller's IP before doing further geo lookups."""
     _track("get_my_ip")
     async with httpx.AsyncClient() as client:
         response = await client.get(f"{BASE_URL}/v1/ip.json")
@@ -25,11 +25,7 @@ async def get_my_ip() -> dict:
 
 @mcp.tool()
 async def get_ip_geo(ip: Optional[str] = None) -> dict:
-    """Get full geo-location information (country, city, latitude, longitude, timezone, ASN, etc.) for a specific IP address or the caller's IP. Use this when the user wants detailed location data for an IP.
-
-    Args:
-        ip: The IP address to look up. If omitted, the caller's own IP is used. Supports IPv4 and IPv6.
-    """
+    """Get full geo-location data (country, region, city, latitude, longitude, timezone, ASN, org, etc.) for one or more IP addresses. Use this when the user wants detailed location information about an IP. If no IP is provided, returns data for the caller's own IP."""
     _track("get_ip_geo")
     async with httpx.AsyncClient() as client:
         if ip:
@@ -42,12 +38,25 @@ async def get_ip_geo(ip: Optional[str] = None) -> dict:
 
 
 @mcp.tool()
-async def get_ip_country(ip: Optional[str] = None) -> dict:
-    """Get only the country for a given IP address or the caller's IP. Use this for lightweight country-only lookups when full geo detail is not needed.
+async def get_ip_geo_bulk(ips: List[str]) -> dict:
+    """Get full geo-location data for multiple IP addresses in a single request. Use this when the user provides a list of IPs and wants geo info for all of them efficiently."""
+    _track("get_ip_geo_bulk")
+    async with httpx.AsyncClient() as client:
+        # GeoJS bulk endpoint accepts multiple IPs as query params
+        params = [("ip[]", ip) for ip in ips]
+        url = f"{BASE_URL}/v1/ip/geo.json"
+        response = await client.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+        # Ensure we always return a dict
+        if isinstance(data, list):
+            return {"results": data}
+        return data
 
-    Args:
-        ip: The IP address to look up. If omitted, returns the country for the caller's own IP.
-    """
+
+@mcp.tool()
+async def get_ip_country(ip: Optional[str] = None) -> dict:
+    """Look up the country code (ISO 3166-1 alpha-2) for a given IP address. Use this when only the country of an IP is needed, for lightweight lookups or access-control decisions."""
     _track("get_ip_country")
     async with httpx.AsyncClient() as client:
         if ip:
@@ -56,36 +65,15 @@ async def get_ip_country(ip: Optional[str] = None) -> dict:
             url = f"{BASE_URL}/v1/ip/country.json"
         response = await client.get(url)
         response.raise_for_status()
-        return response.json()
-
-
-@mcp.tool()
-async def get_bulk_ip_geo(ips: List[str]) -> dict:
-    """Get geo-location information for multiple IP addresses in a single request. Use this when the user provides a list of IPs and wants location data for all of them efficiently.
-
-    Args:
-        ips: A list of IP addresses (IPv4 or IPv6) to look up geo-location data for.
-    """
-    _track("get_bulk_ip_geo")
-    ip_param = ",".join(ips)
-    async with httpx.AsyncClient() as client:
-        url = f"{BASE_URL}/v1/ip/geo/{ip_param}.json"
-        response = await client.get(url)
-        response.raise_for_status()
         data = response.json()
-        # Normalize to always return a dict with a list
         if isinstance(data, list):
             return {"results": data}
-        return {"results": [data]}
+        return data
 
 
 @mcp.tool()
 async def get_ptr_record(ip: Optional[str] = None) -> dict:
-    """Get the PTR (reverse DNS) record for an IP address or the caller's IP. Use this when the user wants to resolve an IP address to its hostname via reverse DNS lookup.
-
-    Args:
-        ip: The IP address to perform a reverse DNS (PTR) lookup on. If omitted, uses the caller's own IP.
-    """
+    """Perform a reverse DNS (PTR) lookup for an IP address to retrieve its associated hostname. Use this when the user wants the domain name that maps back to an IP, useful for identifying the owner or service behind an IP."""
     _track("get_ptr_record")
     async with httpx.AsyncClient() as client:
         if ip:
@@ -94,24 +82,18 @@ async def get_ptr_record(ip: Optional[str] = None) -> dict:
             url = f"{BASE_URL}/v1/dns/ptr.json"
         response = await client.get(url)
         response.raise_for_status()
-        # PTR endpoint may return plain text, handle both
-        content_type = response.headers.get("content-type", "")
-        if "application/json" in content_type:
-            return response.json()
-        else:
-            return {"ptr": response.text.strip(), "ip": ip}
+        data = response.json()
+        if isinstance(data, dict):
+            return data
+        return {"ptr": data}
 
 
 @mcp.tool()
-async def get_ip_asn(ip: Optional[str] = None) -> dict:
-    """Get the ASN (Autonomous System Number) and organization information for a given IP address. Use this when the user wants to know which ISP, cloud provider, or network an IP belongs to.
-
-    Args:
-        ip: The IP address to look up ASN information for. If omitted, uses the caller's own IP.
-    """
-    _track("get_ip_asn")
-    # GeoJS includes ASN info in the geo endpoint
+async def get_asn_info(ip: Optional[str] = None) -> dict:
+    """Retrieve Autonomous System Number (ASN) and organization information for a given IP address. Use this when the user wants to know which ISP, hosting provider, or network owns a particular IP."""
+    _track("get_asn_info")
     async with httpx.AsyncClient() as client:
+        # ASN info is included in the geo endpoint
         if ip:
             url = f"{BASE_URL}/v1/ip/geo/{ip}.json"
         else:
@@ -119,19 +101,18 @@ async def get_ip_asn(ip: Optional[str] = None) -> dict:
         response = await client.get(url)
         response.raise_for_status()
         data = response.json()
-        # Extract ASN-relevant fields
-        if isinstance(data, list):
-            data = data[0] if data else {}
-        asn_info = {
-            "ip": data.get("ip"),
-            "asn": data.get("asn"),
-            "organization": data.get("organization"),
-            "organization_name": data.get("organization_name"),
-            "isp": data.get("isp"),
-            "country": data.get("country"),
-            "country_code": data.get("country_code"),
-        }
-        return {k: v for k, v in asn_info.items() if v is not None}
+        # Extract ASN-related fields
+        if isinstance(data, dict):
+            asn_data = {
+                "ip": data.get("ip"),
+                "asn": data.get("asn"),
+                "organization": data.get("organization"),
+                "organization_name": data.get("organization_name"),
+                "country": data.get("country"),
+                "country_code": data.get("country_code"),
+            }
+            return {k: v for k, v in asn_data.items() if v is not None}
+        return data
 
 
 
